@@ -4,6 +4,7 @@ using UnityEngine;
 using SS3D.Engine.Server.Login.Data;
 using SS3D.Engine.Server.Login.Networking;
 using SS3D.Engine.Server.Round;
+using System.Net;
 
 namespace Mirror
 {
@@ -33,6 +34,8 @@ namespace Mirror
     /// </summary>
     public class LoginNetworkManager : NetworkManager
     {
+        // This is a server-only field. On the client it will mean nothing.
+        [SerializeField] bool useLoginSystemOnLocalHost;
         /**
          * Information about the login server sent to the client.
          */
@@ -74,7 +77,24 @@ namespace Mirror
             loginManager.ApiHeartbeat(ConfirmLoginServer);
         }
 
-        
+        /// <summary>
+        /// Starts the client using an input field to determine the URI
+        /// </summary>
+        /// <param name="inputField"></param>
+        public void StartClient(TMPro.TMP_InputField inputField)
+        {
+            UriBuilder uriBuilder = new UriBuilder();
+            uriBuilder.Scheme = "tcp4";
+            if (IPAddress.TryParse(inputField.text, out IPAddress address)) {
+                uriBuilder.Host = address.ToString();
+            } else {
+                uriBuilder.Host = "localhost";
+            }
+
+            var uri = new Uri(uriBuilder.ToString(), UriKind.Absolute);
+            StartClient(uri);
+        }
+
         /// <summary>
         /// Initial server setup
         /// </summary>
@@ -142,8 +162,11 @@ namespace Mirror
         public override void OnServerConnect(NetworkConnection conn)
         {
             base.OnServerConnect(conn);
+
+            bool userMustLogin = useLoginSystemOnLocalHost && hasLoginServer;
+
             // Must always send a message, so the client knows if they should spawn through the login server or not
-            conn.Send(new LoginServerMessage() {serverAddress = hasLoginServer ? loginServerAddress : null});
+            conn.Send(new LoginServerMessage() {serverAddress = userMustLogin ? loginServerAddress : null});
         }
 
         /**
@@ -223,9 +246,9 @@ namespace Mirror
             StartCoroutine(SpawnPlayerAfterRoundStart(conn, characterSelection));
         }
 
-        private IEnumerator SpawnPlayerAfterRoundStart(NetworkConnection conn,
-            CharacterSelectMessage characterSelection)
+        private IEnumerator SpawnPlayerAfterRoundStart(NetworkConnection conn, CharacterSelectMessage characterSelection)
         {
+            // TODO: Should store players in an object until round is started, then spawn them all at once.
             yield return new WaitUntil(() => roundManager.IsRoundStarted);
 
             //Something has gone horribly wrong
@@ -237,6 +260,8 @@ namespace Mirror
                 ? Instantiate(playerPrefab, startPos.position, startPos.rotation)
                 : Instantiate(playerPrefab);
             player.name = characterSelection.character.name;
+
+            // NetworkServer.ReplacePlayerForConnection(conn, player);
             //Destroy dummy player
             NetworkServer.DestroyPlayerForConnection(conn);
             //Spawn actual player

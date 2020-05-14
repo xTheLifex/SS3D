@@ -41,10 +41,10 @@ namespace SS3D.Engine.Inventory.Extensions
             if (GetItemInHand() == null) return;
 
             var transform = GetItemInHand().transform;
-            inventory.PlaceItem(ContainerObject, HeldSlot, transform.position, transform.rotation);
+            inventory.PlaceItem(ContainerObject, HeldSlot, transform.position);
         }
         [Server]
-        public void PlaceHeldItem(Vector3 position, Quaternion rotation) => inventory.PlaceItem(ContainerObject, HeldSlot, position, rotation);
+        public void PlaceHeldItem(Vector3 position) => inventory.PlaceItem(ContainerObject, HeldSlot, position);
         [Server]
         public void DestroyHeldItem() => inventory.DestroyItem(ContainerObject, HeldSlot);
 
@@ -117,7 +117,7 @@ namespace SS3D.Engine.Inventory.Extensions
                 SelectedHand = 1 - SelectedHand;
                 inventory.holdingSlot = new Inventory.SlotReference(handContainer, handSlots[SelectedHand]);
                 onHandChange?.Invoke(SelectedHand);
-
+                CmdSetActiveHand(SelectedHand);
                 //UpdateTool();
             }
 
@@ -128,6 +128,19 @@ namespace SS3D.Engine.Inventory.Extensions
         private void CmdDropHeldItem()
         {
             DropHeldItem();
+        }
+
+        [Command]
+        private void CmdSetActiveHand(int selectedHand)
+        {
+            if (selectedHand >= 0 && selectedHand < handSlots.Length)
+            {
+                SelectedHand = selectedHand;
+            }
+            else
+            {
+                Debug.Log($"Invalid hand index {selectedHand}");   
+            }
         }
 
         // The indices in the container that contains the hands
