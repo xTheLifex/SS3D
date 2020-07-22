@@ -77,24 +77,34 @@ namespace SS3D.Engine.Inventory
         [Server]
         public void AddItem(GameObject item, GameObject toContainer, int toIndex)
         {
-            Despawn(item);
-            toContainer.GetComponent<Container>().AddItem(toIndex, item);
+            Container container = toContainer.GetComponent<Container>();
+            Item itemComponent = item.GetComponent<Item>();
+            if (container.containerFilter.CanStore(itemComponent))
+            {
+                Despawn(item);
+                container.AddItem(toIndex, item);
+            }
         }
         [Server]
         public void AddItem(GameObject item, GameObject toContainer)
         {
-            Despawn(item);
-            toContainer.GetComponent<Container>().AddItem(item);
+            Container container = toContainer.GetComponent<Container>();
+            Item itemComponent = item.GetComponent<Item>();
+            if (container.containerFilter.CanStore(itemComponent))
+            {
+                Despawn(item);
+                container.AddItem(item);
+            }
         }
 
         /**
          * Place an item from a container into the world.
          */
         [Server]
-        public void PlaceItem(GameObject fromContainer, int fromIndex, Vector3 location)
+        public void PlaceItem(GameObject fromContainer, int fromIndex, Vector3 location, Quaternion rotation)
         {
             GameObject item = fromContainer.GetComponent<Container>().RemoveItem(fromIndex);
-            Spawn(item, location);
+            Spawn(item, location, rotation);
         }
 
         /**
@@ -118,7 +128,7 @@ namespace SS3D.Engine.Inventory
             var from = fromContainer.GetComponent<Container>();
             var to = toContainer.GetComponent<Container>();
 
-            if (!Container.AreCompatible(to.GetSlot(toIndex), from.GetItem(fromIndex).itemType))
+            if (!Container.AreCompatible(to.GetFilter(toIndex), from.GetItem(fromIndex)))
                 throw new InventoryOperationException("Item not compatible with slot");
 
             GameObject item = from.RemoveItem(fromIndex);
@@ -150,7 +160,7 @@ namespace SS3D.Engine.Inventory
         [Command]
         public void CmdAddItemToDefault(GameObject item, GameObject toContainer) => AddItem(item, toContainer);
         [Command]
-        public void CmdPlaceItem(GameObject fromContainer, int fromIndex, Vector3 location) => PlaceItem(fromContainer, fromIndex, location);
+        public void CmdPlaceItem(GameObject fromContainer, int fromIndex, Vector3 location, Quaternion rotation) => PlaceItem(fromContainer, fromIndex, location, rotation);
         [Command]
         public void CmdMoveItem(GameObject fromContainer, int fromIndex, GameObject toContainer, int toIndex) => MoveItem(fromContainer, fromIndex, toContainer, toIndex);
         [Command]
@@ -212,25 +222,43 @@ namespace SS3D.Engine.Inventory
          * Graphically adds the item back into the world (for server and all clients).
          * Must be called from server initially
          */
-        private void Spawn(GameObject item, Vector3 position)
+        private void Spawn(GameObject item, Vector3 position, Quaternion rotation)
         {
+            // World will be the parent
+            item.transform.parent = null;
+
+            Vector3 itemDimensions = item.GetComponentInChildren<Collider>().bounds.size;
+            float itemSize = 0;
+            
+            for(int i = 0; i < 3; i++) {
+                if (itemDimensions[i] > itemSize)
+                    itemSize = itemDimensions[i];                 
+            }
+            float distance = Vector3.Distance(item.transform.position, position);
+            position = distance > 0 ? position + new Vector3(0, itemSize * 0.5f, 0) : position;
+
+            if (distance > 0)
+                item.transform.LookAt(transform);
+            else
+                item.transform.rotation = rotation;
             item.transform.position = position;
-            item.transform.LookAt(transform);
-            Vector3 transformRotation = item.transform.rotation.eulerAngles;
-            transformRotation.x = 0f;
-            transformRotation.z = 0f;
-            item.transform.rotation = Quaternion.Euler(transformRotation);
+            //item.transform.rotation = item.GetComponent<Item>().attachmentPoint.rotation;
+            
+            //Vector3 transformRotation = item.transform.rotation.eulerAngles;
+            //transformRotation.x = 0f;
+            //transformRotation.z = 0f;
+            //item.transform.rotation = Quaternion.Euler(transformRotation);
             item.SetActive(true);
 
             if (isServer)
-                RpcSpawn(item, position);
+                RpcSpawn(item, position, rotation);
         }
 
         [ClientRpc]
-        private void RpcSpawn(GameObject item, Vector3 position)
+        private void RpcSpawn(GameObject item, Vector3 position, Quaternion rotation)
         {
             if (!isServer) // Silly thing to prevent looping when server and client are one
-                Spawn(item, position);
+                Spawn(item, position, rotation);
         }
 
         // All objects containing containers usable by this player

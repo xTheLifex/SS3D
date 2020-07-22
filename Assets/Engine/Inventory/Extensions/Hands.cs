@@ -1,23 +1,35 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using Mirror;
 using UnityEngine;
+using SS3D.Engine.Interactions;
+using UnityEngine.Serialization;
 
 namespace SS3D.Engine.Inventory.Extensions
 {
     [RequireComponent(typeof(Inventory))]
-    public class Hands : NetworkBehaviour
+    public class Hands : InteractionSourceNetworkBehaviour, IToolHolder, IInteractionRangeLimit, IInteractionOriginProvider
     {
         [SerializeField] private Container handContainer = null;
         [SerializeField] private float handRange = 0f;
 
         public event Action<int> onHandChange;
         public int SelectedHand { get; private set; } = 0;
+        public RangeLimit range = new RangeLimit(1.5f, 1);
+        public Transform interactionOrigin;
+
+        public Sprite pickupIcon;
 
         // Use these for inventory actions
         public Container Container => handContainer;
         public GameObject ContainerObject => Container.gameObject;
         public int HeldSlot => handSlots[SelectedHand];
+
+        public void Start()
+        {
+            SupportsMultipleInteractions = true;
+        }
 
         [Server]
         public void Pickup(GameObject target)
@@ -32,6 +44,11 @@ namespace SS3D.Engine.Inventory.Extensions
             }
         }
 
+        public bool IsEmpty()
+        {
+            return Container.GetItem(HeldSlot) == null;
+        }
+
         /*
          * Command wrappers for inventory actions using the currently held item
          */
@@ -41,10 +58,10 @@ namespace SS3D.Engine.Inventory.Extensions
             if (GetItemInHand() == null) return;
 
             var transform = GetItemInHand().transform;
-            inventory.PlaceItem(ContainerObject, HeldSlot, transform.position);
+            inventory.PlaceItem(ContainerObject, HeldSlot, transform.position, transform.rotation);
         }
         [Server]
-        public void PlaceHeldItem(Vector3 position) => inventory.PlaceItem(ContainerObject, HeldSlot, position);
+        public void PlaceHeldItem(Vector3 position, Quaternion rotation) => inventory.PlaceItem(ContainerObject, HeldSlot, position, rotation);
         [Server]
         public void DestroyHeldItem() => inventory.DestroyItem(ContainerObject, HeldSlot);
 
@@ -83,10 +100,12 @@ namespace SS3D.Engine.Inventory.Extensions
             // Because we just make calls to GetSlot, which is set pre-Awake, this is safe.
             handSlots = new int[2] { -1, -1 };
             for (int i = 0; i < handContainer.Length(); ++i) {
-                if (handContainer.GetSlot(i) == Container.SlotType.LeftHand)
+                if (handContainer.GetFilter(i).Hash == Filters.LeftHand)
                     handSlots[0] = i;
-                else if (handContainer.GetSlot(i) == Container.SlotType.RightHand)
+                else if (handContainer.GetFilter(i).Hash == Filters.RightHand)
+                {
                     handSlots[1] = i;
+                }
             }
             if (handSlots[0] == -1 || handSlots[1] == -1)
                 Debug.LogWarning("Player container does not contain slots for hands upon initialization. Maybe they were severed though?");
@@ -106,8 +125,10 @@ namespace SS3D.Engine.Inventory.Extensions
             }
         }
 
-        private void Update()
+        public override void Update()
         {
+            base.Update();
+            
             if (!isLocalPlayer)
                 return;
 
@@ -146,5 +167,26 @@ namespace SS3D.Engine.Inventory.Extensions
         // The indices in the container that contains the hands
         private int[] handSlots;
         private Inventory inventory;
+        public IInteractionSource GetActiveTool()
+        {
+            Item itemInHand = GetItemInHand();
+            if (itemInHand == null)
+            {
+                return null;
+            }
+
+            IInteractionSource interactionSource = itemInHand.prefab.GetComponent<IInteractionSource>();
+            if (interactionSource != null)
+            {
+                interactionSource.Parent = this;
+            }
+            return interactionSource;
+        }
+        public RangeLimit GetInteractionRange()
+        {
+            return range;
+        }
+
+        public Vector3 InteractionOrigin => interactionOrigin.position;
     }
 }

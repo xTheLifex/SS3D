@@ -6,6 +6,7 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.IO;
 using UnityEngine;
 using Mirror;
+using UnityEditor;
 
 namespace SS3D.Engine.Tiles {
     /**
@@ -14,6 +15,11 @@ namespace SS3D.Engine.Tiles {
     [ExecuteAlways]
     public class TileManager : NetworkBehaviour
     {
+        /// <summary>
+        /// How many tiles are serialized per rpc
+        /// </summary>
+        private const int TilesSentPerCall = 50;
+        
         private struct NetworkableTileObject
         {
             public Vector2Int position;
@@ -149,14 +155,30 @@ namespace SS3D.Engine.Tiles {
         [Server]
         public void SendTilesToClient(NetworkConnection connection)
         {
-            TargetInitializeTilesFromServer(
-                connection,
-                origin,
-                tiles.Values.Select(tile => new NetworkableTileObject {
-                    position = GetIndexAt(tile.transform.position),
-                    definition = tile.Tile
-                }).ToArray()
-            );
+            NetworkableTileObject[] tileObjects = tiles.Values.Select(tile => new NetworkableTileObject {
+                position = GetIndexAt(tile.transform.position),
+                definition = tile.Tile
+            }).ToArray();
+            
+            NetworkableTileObject[][] chunks = new NetworkableTileObject[(tileObjects.Length + TilesSentPerCall - 1) / TilesSentPerCall][];
+            for (var i = 0; i < chunks.Length; i++)
+            {
+                int chunkLength = i == chunks.Length - 1 ? tileObjects.Length % TilesSentPerCall : TilesSentPerCall;
+                NetworkableTileObject[] chunk = new NetworkableTileObject[chunkLength];
+                Array.Copy(tileObjects, i * TilesSentPerCall, chunk, 0, 
+                    chunkLength);
+                chunks[i] = chunk;
+            }
+            
+            TargetStartTileStream(connection, origin);
+            foreach (NetworkableTileObject[] chunk in chunks)
+            {
+                TargetReceiveChunkFromServer(
+                    connection,
+                    chunk
+                );
+            }
+            TargetTilemapEnd(connection);
         }
 
         public override void OnStartServer() => ReinitializeFromChildren();
@@ -175,23 +197,46 @@ namespace SS3D.Engine.Tiles {
         }
 #endif
 
-        /**
-         * Create a series of tiles at the given positions
-         */
+        /// <summary>
+        /// Signals to the client that the server will send the tilemap
+        /// </summary>
+        /// <param name="origin">The origin point of the tilemap</param>
         [TargetRpc]
-        private void TargetInitializeTilesFromServer(NetworkConnection connection, Vector3 origin, NetworkableTileObject[] tileList)
+        private void TargetStartTileStream(NetworkConnection connection, Vector3 origin)
         {
             DestroyChildren();
 
             this.origin = origin;
-            foreach (var item in tileList) {
-                ulong key = GetKey(item.position.x, item.position.y);
-                tiles[key] = SpawnTileObject(item.position.x, item.position.y);
-                tiles[key].Tile = item.definition;
-            }
+        }
 
-            // Once they are all made go through and update all adjacencies.
+        /// <summary>
+        /// Called when the server has sent all tilemap chunks
+        /// </summary>
+        [TargetRpc]
+        private void TargetTilemapEnd(NetworkConnection connection)
+        {
             UpdateAllTileAdjacencies();
+        }
+
+        /// <summary>
+        /// Sends a chunk to a client
+        /// </summary>
+        /// <param name="tileList">The tiles in this chunk</param>
+        [TargetRpc]
+        private void TargetReceiveChunkFromServer(NetworkConnection connection, NetworkableTileObject[] tileList)
+        {
+            foreach (var item in tileList) {
+                try
+                {
+                    ulong key = GetKey(item.position.x, item.position.y);
+                    tiles[key] = SpawnTileObject(item.position.x, item.position.y);
+                    tiles[key].Tile = item.definition;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                }
+            }
         }
 
         /*
@@ -273,7 +318,13 @@ namespace SS3D.Engine.Tiles {
 
             var obj = tiles[key];
             tiles.Remove(key);
+#if UNITY_EDITOR
+            if (!EditorApplication.isPlaying)
+                DestroyImmediate(obj.gameObject);
+#else
             Destroy(obj);
+#endif
+
 
             GetAndUpdateAdjacentTiles(x, y, TileDefinition.NullObject);
 
@@ -306,7 +357,7 @@ namespace SS3D.Engine.Tiles {
                 #endif
 
                 // If the tile doesn't actually have anything, destroy it
-                if (childTile.Tile.turf == null && childTile.Tile.fixture == null) {
+                if (childTile.Tile.plenum == null && childTile.Tile.turf == null && childTile.Tile.fixtures == null) {
                     queuedDestroy.Add(child.gameObject);
                     continue;
                 }
@@ -408,6 +459,11 @@ namespace SS3D.Engine.Tiles {
             return ((ulong)y << 32) + (ulong)x;
         }
 
+        public List<TileObject> GetAllTiles()
+        {
+            return tiles.Values.ToList<TileObject>();
+        }
+
         // TODO: This is an inefficient data structure for our purposes.
         // TODO: Allow negatives
         // The key is the concatenated y,x position of the tile.
@@ -426,11 +482,56 @@ namespace SS3D.Engine.Tiles {
 
         public static void WriteNetworkableTileDefinition(this NetworkWriter writer, TileDefinition definition)
         {
+            // Write plenum
+            writer.WriteString(definition.plenum?.name ?? "");
+
+            // Write turf
             writer.WriteString(definition.turf?.name ?? "");
-            writer.WriteString(definition.fixture?.name ?? "");
+
+            // Write all tile fixtures
+            foreach (TileFixtureLayers layer in TileDefinition.GetTileFixtureLayerNames())
+            {
+                Fixture f = definition.fixtures.GetTileFixtureAtLayer(layer);
+                if (f)
+                {
+                    writer.WriteString(f.name ?? "");
+                }
+                else
+                {
+                    writer.WriteString("");
+                }
+            }
+
+            // Write all wall fixtures
+            foreach (WallFixtureLayers layer in TileDefinition.GetWallFixtureLayerNames())
+            {
+                Fixture f = definition.fixtures.GetWallFixtureAtLayer(layer);
+                if (f)
+                {
+                    writer.WriteString(f.name ?? "");
+                }
+                else
+                {
+                    writer.WriteString("");
+                }
+            }
+
+            // Write all floor fixtures
+            foreach (FloorFixtureLayers layer in TileDefinition.GetFloorFixtureLayerNames())
+            {
+                Fixture f = definition.fixtures.GetFloorFixtureAtLayer(layer);
+                if (f)
+                {
+                    writer.WriteString(f.name ?? "");
+                }
+                else
+                {
+                    writer.WriteString("");
+                }
+            }
 
             // Use C# serializer to serialize the object array, cos the Mirror one isn't powerful enough.
-            
+
             // Can't serialize null values so put a boolean indicating array presence first
             if (definition.subStates == null || definition.subStates.All(obj => obj == null)) {
                 writer.WriteBoolean(false);
@@ -447,37 +548,91 @@ namespace SS3D.Engine.Tiles {
         public static TileDefinition ReadNetworkableTileDefinition(this NetworkReader reader)
         {
             TileDefinition tileDefinition = new TileDefinition();
+            tileDefinition.fixtures = new FixturesContainer();
 
+            // Read plenum
+            string plenumName = reader.ReadString();
+            if (!string.IsNullOrEmpty(plenumName))
+            {
+                tileDefinition.plenum = plenums.FirstOrDefault(plenum => plenum.name == plenumName);
+                if (tileDefinition.plenum == null)
+                    Debug.LogError($"Network recieved plenum with name {plenumName} could not be found");
+            }
+
+            // Read turf
             string turfName = reader.ReadString();
-            string fixtureName = reader.ReadString();
-
-            if (!string.IsNullOrEmpty(turfName)) {
+            if (!string.IsNullOrEmpty(turfName))
+            {
                 tileDefinition.turf = turfs.FirstOrDefault(turf => turf.name == turfName);
                 if (tileDefinition.turf == null)
                     Debug.LogError($"Network recieved turf with name {turfName} could not be found");
             }
 
-            if (!string.IsNullOrEmpty(fixtureName)) {
-                tileDefinition.fixture = fixtures.FirstOrDefault(fixture => fixture.name == fixtureName);
-                if (tileDefinition.fixture == null)
-                    Debug.LogError($"Network recieved fixture with name {fixtureName} could not be found");
+            // Read tile fixtures
+            foreach (TileFixtureLayers layer in TileDefinition.GetTileFixtureLayerNames())
+            {
+                string fixtureName = reader.ReadString();
+                if (!string.IsNullOrEmpty(fixtureName))
+                {
+                    TileFixture tf = (TileFixture)fixtures.FirstOrDefault(fixture => fixture.name == fixtureName);
+
+                    tileDefinition.fixtures.SetTileFixtureAtLayer(tf, layer);
+                    if (tf == null)
+                    {
+                        Debug.LogError($"Network recieved fixture with name {fixtureName} could not be found");
+                    }
+                }
+            }
+
+            // Read wall fixtures
+            foreach (WallFixtureLayers layer in TileDefinition.GetWallFixtureLayerNames())
+            {
+                string fixtureName = reader.ReadString();
+                if (!string.IsNullOrEmpty(fixtureName))
+                {
+                    WallFixture wf = (WallFixture)fixtures.FirstOrDefault(fixture => fixture.name == fixtureName);
+
+                    tileDefinition.fixtures.SetWallFixtureAtLayer(wf, layer);
+                    if (wf == null)
+                    {
+                        Debug.LogError($"Network recieved fixture with name {fixtureName} could not be found");
+                    }
+                }
+            }
+
+            // Read floor fixtures
+            foreach (FloorFixtureLayers layer in TileDefinition.GetFloorFixtureLayerNames())
+            {
+                string fixtureName = reader.ReadString();
+                if (!string.IsNullOrEmpty(fixtureName))
+                {
+                    FloorFixture ff = (FloorFixture)fixtures.FirstOrDefault(fixture => fixture.name == fixtureName);
+
+                    tileDefinition.fixtures.SetFloorFixtureAtLayer(ff, layer);
+                    if (ff == null)
+                    {
+                        Debug.LogError($"Network recieved fixture with name {fixtureName} could not be found");
+                    }
+                }
             }
 
             // If the boolean is false, subStates should be null.
-            if(reader.ReadBoolean()) {
-                using(var stream = new MemoryStream(reader.ReadBytesAndSize())) {
+            if (reader.ReadBoolean())
+            {
+                using (var stream = new MemoryStream(reader.ReadBytesAndSize()))
+                {
                     tileDefinition.subStates = new BinaryFormatter().Deserialize(stream) as object[];
                 }
             }
 
             // TODO: Should substates be initialized to null array?
-
             return tileDefinition;
         }
 
         // Store a list of all turfs and fixtures to be used in networking communications.
         // This might not be the final place of these resources (could be a public singleton), given that these could be
         // used for other purposes, e.g. in-game tile editing, recipes, etc.
+        private static Plenum[] plenums = Resources.FindObjectsOfTypeAll<Plenum>();
         private static Turf[] turfs = Resources.FindObjectsOfTypeAll<Turf>();
         private static Fixture[] fixtures = Resources.FindObjectsOfTypeAll<Fixture>();
     }

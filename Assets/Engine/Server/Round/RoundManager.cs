@@ -29,6 +29,7 @@ namespace SS3D.Engine.Server.Round
         public void StartWarmup()
         {
             timerSeconds = warmupTimeSeconds;
+            gameObject.SetActive(true);
             StartCoroutine(TickWarmup());
         }
 
@@ -36,6 +37,7 @@ namespace SS3D.Engine.Server.Round
         {
             started = true;
             controlUi.gameObject.SetActive(true);
+            gameObject.SetActive(true);
             tickCoroutine = StartCoroutine(Tick());
         }
         
@@ -90,6 +92,11 @@ namespace SS3D.Engine.Server.Round
             TimeSpan timeSpan = TimeSpan.FromSeconds(timerSeconds);
             string timer =  timeSpan.ToString(@"hh\:mm\:ss");
             return IsRoundStarted ? $"Round Time: {timer}" : $"Round Start In: {timer}";
+        }
+
+        public void SetWarmupTime(int newTime)
+        {
+            warmupTimeSeconds = newTime;
         }
     }
 }

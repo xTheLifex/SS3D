@@ -42,7 +42,7 @@ namespace SS3D.Engine.Inventory.Extensions
 
         public void OnValidate()
         {
-            Array.Resize(ref displays, slots.Length);
+            Array.Resize(ref displays, slots);
         }
         public override void OnStartClient()
         {
@@ -77,9 +77,17 @@ namespace SS3D.Engine.Inventory.Extensions
             {
                 originalRotations[index] = item.transform.rotation;
             }
-            
-            
-            item.transform.SetParent(displays[index].transform, false);
+
+            // Just use the parent if no displays are set up
+            if (displays[index] != null)
+            {
+                item.transform.SetParent(displays[index].transform, false);
+            }
+            else
+            {
+                item.transform.SetParent(this.transform);
+            }
+
             // Check if a custom attachment point should be used
             Item component = item.GetComponent<Item>();
             Transform attachmentPoint = component.attachmentPoint;
@@ -87,8 +95,15 @@ namespace SS3D.Engine.Inventory.Extensions
             {
                 // Create new (temporary) point
                 // HACK: Required because rotation pivot can be different
-                GameObject temporaryPoint = new GameObject();
-                temporaryPoint.transform.parent = displays[index].transform;
+                GameObject temporaryPoint = new GameObject("TempPivotPoint");
+                if (displays[index] != null)
+                {
+                    temporaryPoint.transform.parent = displays[index].transform;
+                }
+                else
+                {
+                    temporaryPoint.transform.parent = this.transform;
+                }
                 temporaryPoint.transform.localPosition = Vector3.zero;
                 temporaryPoint.transform.rotation = attachmentPoint.root.rotation *  attachmentPoint.localRotation;
                 
@@ -96,6 +111,7 @@ namespace SS3D.Engine.Inventory.Extensions
                 item.transform.parent = temporaryPoint.transform;
                 // Assign the relative position between the attachment point and the object
                 item.transform.localPosition = -attachmentPoint.localPosition;
+                //item.transform.rotation = displays[index].transform.rotation;
                 item.transform.localRotation = Quaternion.identity;
             }
             else
@@ -121,21 +137,28 @@ namespace SS3D.Engine.Inventory.Extensions
      */
         private void UnplaceItem(int index, GameObject item)
         {
-            item.SetActive(false);
-
             // Determine physics status
             item.GetComponent<Rigidbody>().isKinematic = false;
             item.GetComponent<Collider>().enabled = true;
             if (item.GetComponent<NetworkTransform>())
                 item.GetComponent<NetworkTransform>().enabled = true;
 
-            if (item.transform.parent != displays[index].transform)
+            Transform transformParent = item.transform.parent;
+            item.transform.SetParent(null);
+            Transform displayTransform = null;
+            if (displays != null && displays.Length > index)
+            {
+                GameObject display = displays[index];
+                if (display != null)
+                {
+                    displayTransform = display.transform;
+                }
+            }
+            if (transformParent != displayTransform && transformParent != transform)
             {
                 // Destroy temporary attachment point
-                Destroy(item.transform.parent.gameObject);
+                Destroy(transformParent.gameObject);
             }
-            
-            item.transform.SetParent(null);
             
             // Restore old rotation
             if (originalRotations != null)

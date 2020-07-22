@@ -48,7 +48,7 @@ namespace SS3D.Engine.Inventory.UI
         }
         public bool CanMoveItem(Container from, int fromSlot, Container to, int toSlot)
         {
-            return Container.AreCompatible(to.GetSlot(toSlot), from.GetItem(fromSlot).itemType) && to.GetItem(toSlot) == null;
+            return Container.AreCompatible(to.GetFilter(toSlot), from.GetItem(fromSlot)) && to.GetItem(toSlot) == null;
         }
         public bool CanMoveItem(Container from, int fromSlot, UIAbstractContainer to)
         {
@@ -79,7 +79,7 @@ namespace SS3D.Engine.Inventory.UI
             try {
                 if (inventory.holdingSlot.container.GetItem(inventory.holdingSlot.slotIndex) != null && container.GetItem(slot) == null)
                     inventory.CmdMoveItem(inventory.holdingSlot.container.gameObject, inventory.holdingSlot.slotIndex, container.gameObject, slot);
-                else if (inventory.holdingSlot.container.GetItem(inventory.holdingSlot.slotIndex) == null && container.GetItem(slot) != null)
+                else if (inventory.holdingSlot.container?.GetItem(inventory.holdingSlot.slotIndex) == null && container.GetItem(slot) != null)
                     inventory.CmdMoveItem(container.gameObject, slot, inventory.holdingSlot.container.gameObject, inventory.holdingSlot.slotIndex);
             }
             catch(Inventory.InventoryOperationException) { }
@@ -91,8 +91,9 @@ namespace SS3D.Engine.Inventory.UI
             var found = Physics.Raycast(Camera.main.ScreenPointToRay(screenPosition), out hit);
             if(!found)
                 return;
-        
-            inventory.CmdPlaceItem(from.gameObject, fromSlot, hit.point + hit.normal * 0.2f);
+
+            GameObject item = from.gameObject;
+            inventory.CmdPlaceItem(item, fromSlot, hit.point + hit.normal * 0.2f, item.transform.rotation);
         }
 
         private void OnInventoryChange()

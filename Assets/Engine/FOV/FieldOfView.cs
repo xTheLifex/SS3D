@@ -1,5 +1,11 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using Mirror;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Profiling;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace SS3D.Engine.FOV
 {
@@ -7,7 +13,14 @@ namespace SS3D.Engine.FOV
     [RequireComponent(typeof(MeshFilter))]
     public class FieldOfView : MonoBehaviour
     {
-        [SerializeField] private Transform target = null;
+        [SerializeField]
+        public bool showDebug;
+
+        [SerializeField]
+        private GameObject fog;
+
+        [SerializeField]
+        public Transform target = null;
 
         [Space]
         [SerializeField]
@@ -25,11 +38,6 @@ namespace SS3D.Engine.FOV
         [SerializeField]
         [Tooltip("Raycasts per degree")]
         private float meshResolution = .1f;
-
-        [SerializeField]
-        [Tooltip("How \"deep\" the field of view penetrates the wall")]
-        private float maskCutawayDistance = 0.1f;
-
 
         [Header("Edge Detection")]
         [SerializeField]
@@ -49,20 +57,73 @@ namespace SS3D.Engine.FOV
         private MeshFilter viewMeshFilter;
         private Mesh viewMesh;
 
+        const int MAX_VERTICES = 800;
+        
+        [NonSerialized]
+        public NativeArray<Vector3> viewPoints;
+        [NonSerialized]
+        public int viewPointsIndex;
+        
+        // Stores triangles for mesh
+        private NativeArray<ushort> triangles;
+        // Buffer for view cast batching
+        private ViewCastInfo[] viewCastResults;
+        // Buffer for view cast angles
+        private float[] angleBuffer;
+        
+        static ProfilerMarker meshPerformanceMarker = new ProfilerMarker("FieldOfView.Mesh");
+        static ProfilerMarker pointsPerformanceMarker = new ProfilerMarker("FieldOfView.ViewPoints");
+
+        private void OnEnable()
+        {
+            fog.SetActive(true);
+        }
+
+        private void OnDisable()
+        {
+            fog.SetActive(false);
+        }
+
         private void Start()
         {
+            // Only run when graphics are present
+            // TODO: Only run on client
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+            {
+                Destroy(gameObject);
+            }
+            
             viewMeshFilter = GetComponent<MeshFilter>();
 
             viewMesh = new Mesh();
             viewMesh.name = "View Mesh";
             viewMeshFilter.mesh = viewMesh;
 
-            transform.parent = target.parent;
+            int maxViewPoints = (int) (viewConeWidth * meshResolution) * 3 + 1;
+            viewPoints = new NativeArray<Vector3>(maxViewPoints + 1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            triangles = new NativeArray<ushort>((maxViewPoints + 1) * 3, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            for (ushort i = 0; i < maxViewPoints - 2; i++)
+            {
+                triangles[i * 3] = 0;
+                triangles[i * 3 + 1] = unchecked((ushort) (i + 1u));
+                triangles[i * 3 + 2] = unchecked((ushort) (i + 2u));
+            }
+            
+            viewCastResults = new ViewCastInfo[Mathf.RoundToInt(viewConeWidth * meshResolution) + 1];
+            angleBuffer = new float[viewCastResults.Length];
         }
 
-        private void FixedUpdate()
+        private void OnDestroy()
         {
-            transform.position = target.position;
+            viewMesh.Clear();
+            viewPoints.Dispose();
+            triangles.Dispose();
+        }
+
+        private void Update()
+        {
+            if(!target) return;
+            transform.position = target.transform.position;
             DrawFieldOfView();
         }
 
@@ -72,83 +133,84 @@ namespace SS3D.Engine.FOV
             {
                 angleInDegrees += transform.eulerAngles.y;
             }
-
-            return new Vector3(Mathf.Sin(angleInDegrees * Mathf.Deg2Rad), 0, Mathf.Cos(angleInDegrees * Mathf.Deg2Rad));
+            
+            var rotation = Quaternion.AngleAxis(angleInDegrees, Vector3.up);
+            return rotation * Vector3.forward;
         }
 
         public void DrawFieldOfView()
         {
-            var viewPoints = CalculateViewPoints();
+            pointsPerformanceMarker.Begin();
+            CalculateViewPoints();
+            pointsPerformanceMarker.End();
 
-            int vertexCount = viewPoints.Count + 1;
-            Vector3[] vertices = new Vector3[vertexCount];
-            int[] triangles = new int[(vertexCount - 2) * 3];
-//        Color[] colors = new Color[vertexCount];
-//        Vector2[] uvs = new Vector2[vertexCount];
+            meshPerformanceMarker.Begin();
 
-
-            vertices[0] = Vector3.zero;
-//        colors[0] = new Color(0, 0, 0, 0);
-//        uvs[0] = new Vector2(0, 0);
-
-            for (int i = 0; i < vertexCount - 1; i++)
-            {
-                vertices[i + 1] = transform.InverseTransformPoint(viewPoints[i] - detectionOffset);
-
-                if (i < vertexCount - 2)
-                {
-                    triangles[i * 3] = 0;
-                    triangles[i * 3 + 1] = i + 1;
-                    triangles[i * 3 + 2] = i + 2;
-
-//                uvs[i + 1] = new Vector2(0, 1);
-//                uvs[i + 2] = new Vector2(0, 1);
-
-//                colors[i + 1] = new Color(0, 0, 0, 1);
-//                colors[i + 2] = new Color(0, 0, 0, 1);
-                }
-            }
-
-            viewMesh.Clear();
-            viewMesh.vertices = vertices;
-            viewMesh.triangles = triangles;
-//        viewMesh.colors = colors;
-//        viewMesh.uv = uvs;
+            int triangleCount = (viewPointsIndex - 2) * 3;
+            viewPoints[0] = transform.InverseTransformPoint(target.transform.position);
+            Vector3[] vertices = new Vector3[viewPointsIndex];
+            for(int i = 1; i < viewPointsIndex; i++) vertices[i] = transform.InverseTransformPoint(viewPoints[i]);
+            viewMesh.SetVertexBufferParams(viewPointsIndex, new VertexAttributeDescriptor(VertexAttribute.Position));
+            viewMesh.SetVertexBufferData(vertices, 0, 0, viewPointsIndex);
+            viewMesh.SetIndexBufferParams(triangleCount, IndexFormat.UInt16);
+            viewMesh.SetIndexBufferData(triangles, 0, 0, triangleCount);
+            viewMesh.subMeshCount = 1;
+            viewMesh.SetSubMesh(0, new SubMeshDescriptor(0, triangleCount));
+            
+            meshPerformanceMarker.End();
         }
 
-
-        // TODO: Implement RaycastCommand https://docs.unity3d.com/ScriptReference/RaycastCommand.html
-        public List<Vector3> CalculateViewPoints()
+        public void CalculateViewPoints()
         {
             int stepCount = Mathf.RoundToInt(viewConeWidth * meshResolution);
             float stepAngleSize = viewConeWidth / stepCount;
+            float halfCone = viewConeWidth / 2;
 
-            List<Vector3> viewPoints = new List<Vector3>();
+            // Resize when changed in editor
+            if (viewCastResults.Length < stepCount)
+            {
+                Array.Resize(ref viewCastResults, stepCount + 1);
+                Array.Resize(ref angleBuffer, stepCount + 1);
+            }
+
+            // Set required angles
+            for (var i = 0; i <= stepCount; i++)
+            {
+                angleBuffer[i] = halfCone + stepAngleSize * i;
+            }
+            
+            // Perform raycast batch
+            ViewCastBatch(angleBuffer, viewCastResults);
+            
+            viewPointsIndex = 1;
             ViewCastInfo oldViewCast = new ViewCastInfo();
             for (int i = 0; i <= stepCount; i++)
             {
-                float angle = transform.eulerAngles.y - viewConeWidth / 2 + stepAngleSize * i;
-                ViewCastInfo newViewCast = ViewCast(angle);
+                ViewCastInfo newViewCast = viewCastResults[i];
 
-                if (i > 0)
+                bool edgeDistanceThresholdExceeded =
+                    Mathf.Abs(oldViewCast.Distance - newViewCast.Distance) > edgeDistanceThreshold;
+                if (oldViewCast.Hit != newViewCast.Hit ||
+                    (oldViewCast.Hit && newViewCast.Hit && oldViewCast.Normal != newViewCast.Normal &&
+                     edgeDistanceThresholdExceeded))
                 {
-                    bool edgeDistanceThresholdExceeded =
-                        Mathf.Abs(oldViewCast.Distance - newViewCast.Distance) > edgeDistanceThreshold;
-                    if (oldViewCast.Hit != newViewCast.Hit ||
-                        (oldViewCast.Hit && newViewCast.Hit && oldViewCast.Normal != newViewCast.Normal &&
-                         edgeDistanceThresholdExceeded))
+                    EdgeInfo edge = FindEdge(oldViewCast, newViewCast);
+                    if (edge.PointA != Vector3.zero)
                     {
-                        EdgeInfo edge = FindEdge(oldViewCast, newViewCast);
-                        if (edge.PointA != Vector3.zero) viewPoints.Add(edge.PointA);
-                        if (edge.PointB != Vector3.zero) viewPoints.Add(edge.PointB);
+                        viewPoints[viewPointsIndex] = edge.PointA;
+                        viewPointsIndex++;
+                    }
+                    if (edge.PointB != Vector3.zero)
+                    {
+                        viewPoints[viewPointsIndex] = edge.PointB;
+                        viewPointsIndex++;
                     }
                 }
 
-                viewPoints.Add(newViewCast.Point);
+                viewPoints[viewPointsIndex] = newViewCast.Point;
+                viewPointsIndex++;
                 oldViewCast = newViewCast;
             }
-
-            return viewPoints;
         }
 
         private EdgeInfo FindEdge(ViewCastInfo minViewCast, ViewCastInfo maxViewCast)
@@ -180,18 +242,66 @@ namespace SS3D.Engine.FOV
             return new EdgeInfo(minPoint, maxPoint);
         }
 
+        private void ViewCastBatch(float[] angles, ViewCastInfo[] resultArray)
+        {
+            if (resultArray.Length < angles.Length)
+            {
+                throw new ArgumentException("Results can't be smaller than angles", nameof(resultArray));
+            }
+            
+            // Allocate arrays for raycast data
+            var hits = new NativeArray<RaycastHit>(angles.Length, Allocator.TempJob);
+            var commands = new NativeArray<RaycastCommand>(angles.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            
+            Vector3 origin = target.transform.position;
+
+            // Create raycast commands
+            for (var i = 0; i < angles.Length; i++)
+            {
+                commands[i] = new RaycastCommand(origin, DirectionFromAngle(angles[i], true), viewRange, obstacleMask);
+            }
+
+            // Schedule raycasts
+            JobHandle handle = RaycastCommand.ScheduleBatch(commands, hits, 1);
+            // Wait for the raycasting to complete
+            handle.Complete();
+            
+            // Fill results array
+            for (var i = 0; i < hits.Length; i++)
+            {
+                RaycastHit hit = hits[i];
+                // Collider is only valid if hit (yes, this is in the docs)
+                if (hit.collider)
+                {
+                    resultArray[i] = new ViewCastInfo(true, hit.point, hit.distance, angles[i], hit.normal);
+                }
+                else
+                {
+                    resultArray[i] = new ViewCastInfo(false, 
+                        origin + DirectionFromAngle(angles[i], true) * viewRange,
+                        viewRange,
+                        angles[i],
+                        hit.normal);
+                }
+            }
+            
+            // Dispose raycast data
+            hits.Dispose();
+            commands.Dispose();
+        }
+        
         private ViewCastInfo ViewCast(float globalAngle)
         {
             Vector3 dir = DirectionFromAngle(globalAngle, true);
 
-            if (Physics.Raycast((transform.position + detectionOffset), dir, out var hit, viewRange, obstacleMask))
+            if (Physics.Raycast(target.transform.position, dir, out var hit, viewRange, obstacleMask))
             {
-                // Applying maskCutawayDistance to make sure the walls remain visible.
-                return new ViewCastInfo(true, hit.point + (-hit.normal * maskCutawayDistance), hit.distance, globalAngle,
+                return new ViewCastInfo(true, hit.point, hit.distance,
+                    globalAngle,
                     hit.normal);
             }
 
-            return new ViewCastInfo(false, (transform.position + detectionOffset) + dir * viewRange, viewRange,
+            return new ViewCastInfo(false, target.transform.position + dir * viewRange, viewRange,
                 globalAngle, hit.normal);
         }
 

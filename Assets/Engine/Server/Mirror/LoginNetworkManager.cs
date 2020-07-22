@@ -1,4 +1,4 @@
-﻿using System;
+﻿    using System;
 using System.Collections;
 using UnityEngine;
 using SS3D.Engine.Server.Login.Data;
@@ -35,7 +35,14 @@ namespace Mirror
     public class LoginNetworkManager : NetworkManager
     {
         // This is a server-only field. On the client it will mean nothing.
-        [SerializeField] bool useLoginSystemOnLocalHost;
+        //[SerializeField] bool useLoginSystemOnLocalHost;
+
+        // Does the server require ingame login?
+        [SerializeField] bool useLoginSystem;
+
+        // Warmup time until round starts
+        [Range(3, 3600)]
+        [SerializeField] int warmupTime;
         /**
          * Information about the login server sent to the client.
          */
@@ -59,7 +66,7 @@ namespace Mirror
         [SerializeField] private GameObject roundManagerPrefab = null;
 
         private LoginManager loginManager;
-        private RoundManager roundManager;
+        public RoundManager roundManager;
 
         private bool hasLoginServer; // whether the login server is found and alive
 
@@ -70,11 +77,14 @@ namespace Mirror
             // TODO: Should this be called everywhere?
 
             // Set the defaults for the login manager
-            var loginManagerGameObject = Instantiate(loginManagerPrefab);
-            loginManager = loginManagerGameObject.GetComponent<LoginManager>();
-            loginManager.UpdateApiAddress(loginServerAddress,
-                character => SpawnPlayerWithLoginServer(NetworkServer.localConnection, character));
-            loginManager.ApiHeartbeat(ConfirmLoginServer);
+            if (useLoginSystem)
+            {
+                var loginManagerGameObject = Instantiate(loginManagerPrefab);
+                loginManager = loginManagerGameObject.GetComponent<LoginManager>();
+                loginManager.UpdateApiAddress(loginServerAddress,
+                    character => SpawnPlayerWithLoginServer(NetworkServer.localConnection, character));
+                loginManager.ApiHeartbeat(ConfirmLoginServer);
+            }
         }
 
         /// <summary>
@@ -126,9 +136,14 @@ namespace Mirror
 
         private void SetupServerManagers()
         {
-            GameObject roundManagerGameObject = Instantiate(roundManagerPrefab);
-            NetworkServer.Spawn(roundManagerGameObject);
-            roundManager = roundManagerGameObject.GetComponent<RoundManager>();
+            if (roundManager == null)
+            {
+                roundManager = Instantiate(roundManagerPrefab).GetComponent<RoundManager>();
+            }
+
+            NetworkServer.Spawn(roundManager.gameObject);
+            roundManager = roundManager.GetComponent<RoundManager>();
+            roundManager.SetWarmupTime(warmupTime);
             roundManager.StartWarmup();
         }
 
@@ -163,7 +178,7 @@ namespace Mirror
         {
             base.OnServerConnect(conn);
 
-            bool userMustLogin = useLoginSystemOnLocalHost && hasLoginServer;
+            bool userMustLogin = useLoginSystem && hasLoginServer;
 
             // Must always send a message, so the client knows if they should spawn through the login server or not
             conn.Send(new LoginServerMessage() {serverAddress = userMustLogin ? loginServerAddress : null});
