@@ -114,8 +114,9 @@ GameObject:
   - component: {fileID: 6431728947182756207}
   - component: {fileID: 6371223980325206078}
   - component: {fileID: 1176681601152780847}
+  - component: {fileID: 8959118759034439111}
   m_Layer: 0
-  m_Name: cryotube
+  m_Name: Cryotube - Blue
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -275,6 +276,20 @@ MonoBehaviour:
   DisplayName: Cryotube
   Text: 
   MaxDistance: 0
+--- !u!114 &8959118759034439111
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5385663273565442968}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ca62035673670df44b63025dcc079a25, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  tileState:
+    rotation: 0
 --- !u!1 &5625392702527621547
 GameObject:
   m_ObjectHideFlags: 0
@@ -524,10 +539,10 @@ CapsuleCollider:
   m_Material: {fileID: 0}
   m_IsTrigger: 0
   m_Enabled: 1
-  m_Radius: 0.64462554
-  m_Height: 3.1376395
+  m_Radius: 0.63528347
+  m_Height: 3.3797712
   m_Direction: 1
-  m_Center: {x: 0.50062823, y: 1.611732, z: 0.5012473}
+  m_Center: {x: -0.49999976, y: 1.4906664, z: -0.5001116}
 --- !u!1 &9205250489425835359
 GameObject:
   m_ObjectHideFlags: 0
